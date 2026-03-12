@@ -36,6 +36,21 @@ Where `<system>` is one of: `mem0`, `graphiti`, `lightrag`, `cognee`
 
 Raw results stored in Modal volumes under `/qa-benchmarks/<benchmark>/{answers,evaluated}`
 
+### One-command helper
+
+From `evals/src`, you can run the full pipeline with:
+
+```bash
+./run_full_benchmark.sh
+```
+
+Useful env overrides:
+- `RUNS=45` (default)
+- `COGNEE_QA_ENGINE=cognee_graph_completion_cot` (default)
+- `SKIP_GRAPHITI=1` to skip Graphiti
+- `SKIP_ANALYSIS=1` to skip local cross-benchmark aggregation
+
+
 ## Results Analysis
 
 - `python run_cross_benchmark_analysis.py`

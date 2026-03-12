@@ -51,6 +51,8 @@ class OllamaEmbeddingEngine(EmbeddingEngine):
     huggingface_tokenizer_name: str
 
     MAX_RETRIES = 5
+    MIN_CONTEXT_RETRY_CHARS = 256
+    CONTEXT_RETRY_REDUCTION_RATIO = 0.75
 
     def __init__(
         self,
@@ -100,11 +102,12 @@ class OllamaEmbeddingEngine(EmbeddingEngine):
         embeddings = await asyncio.gather(*[self._get_embedding(prompt) for prompt in text])
         return embeddings
 
-    def _truncate_text_to_token_limit(self, text: str, max_tokens: int = 2048) -> str:
+    def _truncate_text_to_token_limit(self, text: str, max_tokens: Optional[int] = None) -> str:
         """
         Truncate text to fit within the embedding model's context length.
         Uses character-based truncation (roughly 4 chars per token).
         """
+        max_tokens = max_tokens or self.max_completion_tokens or 2048
         char_limit = max_tokens * 4
         if len(text) > char_limit:
             logger.warning(
@@ -124,13 +127,7 @@ class OllamaEmbeddingEngine(EmbeddingEngine):
         """
         Internal method to call the Ollama embeddings endpoint for a single prompt.
         """
-        truncated_prompt = self._truncate_text_to_token_limit(prompt)
-
-        payload = {
-            "model": self.model,
-            "input": truncated_prompt,
-            "dimensions": self.dimensions,
-        }
+        current_prompt = self._truncate_text_to_token_limit(prompt)
 
         headers = {}
         api_key = os.getenv("LLM_API_KEY")
@@ -140,27 +137,59 @@ class OllamaEmbeddingEngine(EmbeddingEngine):
         ssl_context = create_secure_ssl_context()
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         async with aiohttp.ClientSession(connector=connector) as session:
-            async with embedding_rate_limiter_context_manager():
-                async with session.post(
-                    self.endpoint, json=payload, headers=headers, timeout=60.0
-                ) as response:
-                    data = await response.json()
+            while True:
+                payload = {
+                    "model": self.model,
+                    "input": current_prompt,
+                    "dimensions": self.dimensions,
+                }
 
-                    if "error" in data:
-                        error_msg = data["error"]
-                        logger.error(f"Ollama embedding error: {error_msg}")
-                        if "context length" in error_msg or "input length" in error_msg:
+                async with embedding_rate_limiter_context_manager():
+                    async with session.post(
+                        self.endpoint, json=payload, headers=headers, timeout=60.0
+                    ) as response:
+                        data = await response.json()
+
+                if "error" in data:
+                    error_msg = data["error"]
+                    logger.error(f"Ollama embedding error: {error_msg}")
+                    normalized_error_msg = error_msg.lower()
+                    if "context length" in normalized_error_msg or "input length" in normalized_error_msg:
+                        shrunken_prompt = self._shrink_prompt_for_context_retry(current_prompt)
+                        if shrunken_prompt is None:
                             raise ValueError(f"Text too long for embedding model: {error_msg}")
-                        raise RuntimeError(f"Ollama embedding API error: {error_msg}")
 
-                    if "embeddings" in data:
-                        return data["embeddings"][0]
-                    elif "embedding" in data:
-                        return data["embedding"]
-                    elif "data" in data and len(data["data"]) > 0:
-                        return data["data"][0]["embedding"]
-                    else:
-                        raise ValueError(f"Unexpected response format from Ollama: {data}")
+                        logger.warning(
+                            "Retrying Ollama embedding with shorter input "
+                            f"({len(current_prompt)} -> {len(shrunken_prompt)} chars)."
+                        )
+                        current_prompt = shrunken_prompt
+                        continue
+
+                    raise RuntimeError(f"Ollama embedding API error: {error_msg}")
+
+                if "embeddings" in data:
+                    return data["embeddings"][0]
+                if "embedding" in data:
+                    return data["embedding"]
+                if "data" in data and len(data["data"]) > 0:
+                    return data["data"][0]["embedding"]
+
+                raise ValueError(f"Unexpected response format from Ollama: {data}")
+
+    def _shrink_prompt_for_context_retry(self, prompt: str) -> Optional[str]:
+        if len(prompt) <= self.MIN_CONTEXT_RETRY_CHARS:
+            return None
+
+        next_length = max(
+            self.MIN_CONTEXT_RETRY_CHARS,
+            int(len(prompt) * self.CONTEXT_RETRY_REDUCTION_RATIO),
+        )
+
+        if next_length >= len(prompt):
+            return None
+
+        return prompt[:next_length]
 
     def get_vector_size(self) -> int:
         """
