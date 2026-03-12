@@ -67,6 +67,10 @@ class OllamaAPIAdapter(LLMInterface):
             mode=instructor.Mode(self.instructor_mode),
         )
 
+
+    def _is_plain_text_response(self, response_model: Type[BaseModel]) -> bool:
+        return response_model is str
+
     @retry(
         stop=stop_after_delay(128),
         wait=wait_exponential_jitter(8, 128),
@@ -98,19 +102,29 @@ class OllamaAPIAdapter(LLMInterface):
 
             - BaseModel: A structured output that conforms to the specified response model.
         """
+        messages = [
+            {
+                "role": "user",
+                "content": f"{text_input}",
+            },
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+        ]
+
         async with llm_rate_limiter_context_manager():
+            if self._is_plain_text_response(response_model):
+                response = self.aclient.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_retries=2,
+                )
+                return response.choices[0].message.content
+
             response = self.aclient.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"{text_input}",
-                    },
-                    {
-                        "role": "system",
-                        "content": system_prompt,
-                    },
-                ],
+                messages=messages,
                 max_retries=2,
                 response_model=response_model,
             )
