@@ -3,7 +3,7 @@
 from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from cognee.infrastructure.llm.config import (
     get_llm_config,
 )
@@ -20,10 +20,28 @@ if get_llm_config().llm_provider.lower() == "gemini":
         """Node in a knowledge graph."""
 
         id: str
-        name: str
+        name: str = ""
         type: str
-        description: str
+        description: str = ""
         label: str
+
+        @model_validator(mode="before")
+        @classmethod
+        def fill_missing_fields(cls, data: Any):
+            if not isinstance(data, dict):
+                return data
+
+            node_id = data.get("id", "")
+            node_type = data.get("type", "")
+            name = (data.get("name") or "").strip()
+            description = (data.get("description") or "").strip()
+
+            if not name:
+                data["name"] = node_id or node_type or "unknown"
+            if not description:
+                data["description"] = data["name"]
+
+            return data
 
     class Edge(BaseModel):
         """Edge in a knowledge graph."""
@@ -45,9 +63,27 @@ else:
         """Node in a knowledge graph."""
 
         id: str
-        name: str
+        name: str = ""
         type: str
-        description: str
+        description: str = ""
+
+        @model_validator(mode="before")
+        @classmethod
+        def fill_missing_fields(cls, data: Any):
+            if not isinstance(data, dict):
+                return data
+
+            node_id = data.get("id", "")
+            node_type = data.get("type", "")
+            name = (data.get("name") or "").strip()
+            description = (data.get("description") or "").strip()
+
+            if not name:
+                data["name"] = node_id or node_type or "unknown"
+            if not description:
+                data["description"] = data["name"]
+
+            return data
 
     class Edge(BaseModel):
         """Edge in a knowledge graph."""
