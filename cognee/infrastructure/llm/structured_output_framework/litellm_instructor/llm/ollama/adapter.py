@@ -62,14 +62,27 @@ class OllamaAPIAdapter(LLMInterface):
 
         self.instructor_mode = instructor_mode if instructor_mode else self.default_instructor_mode
 
+        self.client = OpenAI(base_url=self.endpoint, api_key=self.api_key)
         self.aclient = instructor.from_openai(
-            OpenAI(base_url=self.endpoint, api_key=self.api_key),
+            self.client,
             mode=instructor.Mode(self.instructor_mode),
         )
 
-
     def _is_plain_text_response(self, response_model: Type[BaseModel]) -> bool:
         return response_model is str
+
+    def _extract_text_content(self, response) -> str:
+        if isinstance(response, str):
+            return response
+
+        choices = getattr(response, "choices", None)
+        if choices and len(choices) > 0:
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None) if message else None
+            if content is not None:
+                return content
+
+        return ""
 
     @retry(
         stop=stop_after_delay(128),
@@ -115,12 +128,13 @@ class OllamaAPIAdapter(LLMInterface):
 
         async with llm_rate_limiter_context_manager():
             if self._is_plain_text_response(response_model):
-                response = self.aclient.chat.completions.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     max_retries=2,
+                    max_completion_tokens=self.max_completion_tokens,
                 )
-                return response.choices[0].message.content
+                return self._extract_text_content(response)
 
             response = self.aclient.chat.completions.create(
                 model=self.model,
